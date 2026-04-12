@@ -1,61 +1,66 @@
 # Local File Finder Implementation Handoff
 
 ## 1. Product Summary
-Build a native iPhone app that gives users content search across files they manage in the iOS Files ecosystem. The MVP should let a user authorize folders or files from Files, index those documents locally, run full-text keyword search, and view result previews that include file location and matched snippets. The app must support embedded PDF text plus on-device OCR for images and scanned PDFs.
+Build a native iPhone app that lets users search inside the files they manage through the iOS Files ecosystem. The MVP should let a user add folders or individual files from Files, index supported content locally, run keyword search, and open results with useful snippets and location context.
 
-This is a local-first utility app, not a cloud product. Do not introduce a server, external OCR API, or web stack.
+The product promise is local-first document search with on-device OCR. File content must stay on device. Do not add a server, sync service, or external OCR API.
 
-## 2. Critical Product Reality: iOS Sandbox Boundaries
-The prompt says "all iPhone files," but the implementation must respect how iOS actually works.
+## 2. Product Reality and Platform Constraints
+The idea says "all iPhone files," but the implementation must follow actual iOS rules.
 
-What is feasible:
-- The app can search files and folders the user explicitly grants through the document picker / Files integration.
-- The app can persist access to those locations using security-scoped bookmarks.
-- The app can maintain its own local index of extracted text and metadata.
+Feasible for MVP:
+- Search folders and files the user explicitly grants through the Files picker.
+- Persist access to those locations with security-scoped bookmarks.
+- Maintain a local index of extracted text, metadata, and snippets.
+- Reindex authorized locations later, including from background opportunities when iOS allows it.
 
-What is not feasible for MVP:
-- Crawling the entire device file system without user consent.
-- Reading arbitrary files from other apps' sandboxes.
-- Assuming continuous filesystem monitoring across every provider.
+Not feasible for MVP:
+- Crawling the entire device filesystem.
+- Reading arbitrary files in other apps' sandboxes without user-granted access.
+- Guaranteeing continuous real-time monitoring across every file provider.
 
-Product wording in the app should be honest: "Search inside the folders you add from Files." Do not promise unrestricted device-wide crawling.
+User-facing copy should be explicit: "Search inside the folders and files you add from Files." Do not imply unrestricted device-wide access.
 
 ## 3. MVP Scope
-Must-have features:
-- Add one or more folders/files from Files.
-- Persist access across launches.
-- Index supported files locally.
-- Extract text from text files and text-based PDFs.
-- Run OCR on images and scanned PDFs on device.
-- Search by keyword.
-- Show result rows with filename, source folder, and content snippet.
-- Show indexing status and allow manual reindex.
+### In scope
+- Add folders or files from Files.
+- Persist and restore authorized access across launches.
+- Enumerate supported files inside those authorized locations.
+- Extract text from plain text files and embedded-text PDFs.
+- Run on-device OCR for images and scanned PDFs.
+- Store extracted text and metadata locally.
+- Search by keyword across indexed content.
+- Show result rows with filename, location, snippet, and OCR indicator.
+- Show indexing status, failures, and manual reindex controls.
 
-Explicit MVP exclusions:
-- Semantic/vector search.
-- Cross-device sync.
-- macOS/iPad multitarget support.
-- Collaborative libraries.
-- Third-party search engine integration.
-- Full document editing.
+### Explicitly out of scope for v1
+- Semantic search or embeddings.
+- Cloud sync.
+- Collaboration or shared libraries.
+- macOS, iPad, or Catalyst targets.
+- Full editing workflows.
+- Broad proprietary document format support without a reliable native extraction path.
 
-## 4. Recommended Tech Stack
-Use Apple-native frameworks only unless a very specific blocker appears.
+## 4. Recommended Stack
+Use Apple-native frameworks unless a measured blocker appears.
 
 - Language: Swift
 - UI: SwiftUI
-- Persistence: SwiftData
+- Local persistence: SwiftData
 - PDF text extraction: PDFKit
 - OCR: Vision text recognition
-- File access: UIDocumentPickerViewController or SwiftUI file importer
-- Type detection: UniformTypeIdentifiers
+- File access: UIDocumentPickerViewController or SwiftUI `fileImporter`
+- File type detection: UniformTypeIdentifiers
 - Background refresh: BackgroundTasks
-- Preview/thumbnails: QuickLookThumbnailing and system document open flows
+- Preview and thumbnails: QuickLook, QuickLookThumbnailing
 
-If a lower-level persistence issue appears with SwiftData query performance, it is acceptable to keep SwiftData models but add a small custom SQLite FTS layer later. Do not start there. Start with SwiftData plus normalized token fields and only escalate if real profiling proves it necessary.
+Storage note:
+- Start with SwiftData for metadata and extracted content.
+- For very large text bodies, prefer chunked/page records instead of a single giant text blob.
+- Only introduce a local SQLite FTS sidecar if profiling proves SwiftData string search is too slow.
 
-## 5. Proposed Project Structure
-Create a clean Xcode structure like this:
+## 5. Suggested Project Layout
+Use a structure like this inside the Xcode project:
 
 ```text
 LocalFileFinder/
@@ -63,6 +68,7 @@ LocalFileFinder/
     LocalFileFinderApp.swift
     AppContainer.swift
     RootView.swift
+    AppState.swift
   Models/
     IndexedSource.swift
     IndexedFile.swift
@@ -83,21 +89,21 @@ LocalFileFinder/
       PDFTextExtractor.swift
       ImageOCRExtractor.swift
       PDFOCRExtractor.swift
+    Indexing/
+      IndexingCoordinator.swift
+      IndexingProgressStore.swift
+      BackgroundIndexScheduler.swift
     Search/
       SearchRepository.swift
       SearchRanker.swift
       SnippetBuilder.swift
-    Indexing/
-      IndexingCoordinator.swift
-      BackgroundIndexScheduler.swift
-      IndexingProgressStore.swift
     Preview/
-      ThumbnailService.swift
       DocumentOpenCoordinator.swift
+      ThumbnailService.swift
   Features/
     Onboarding/
       OnboardingView.swift
-      SourcePickerViewModel.swift
+      OnboardingViewModel.swift
     Search/
       SearchView.swift
       SearchViewModel.swift
@@ -114,112 +120,101 @@ LocalFileFinder/
     Logger.swift
     UTType+SupportedTypes.swift
     String+Normalization.swift
+    Date+Formatting.swift
   Tests/
     Unit/
     UI/
     Fixtures/
 ```
 
-Keep service code separate from SwiftUI view models. A weaker coding agent is likely to mix UI and file logic unless told not to.
+Important separation rule for the downstream agent:
+- Keep file access, indexing, OCR, and search in `Services/`.
+- Keep SwiftUI state and presentation in `Features/`.
+- Do not bury file-system logic inside views.
 
 ## 6. Architecture Overview
-High-level flow:
-1. User adds folders/files from Files.
-2. The app stores security-scoped bookmarks for those locations.
-3. The indexing coordinator restores source access and enumerates supported files.
-4. For each file, the extraction pipeline chooses one strategy:
-   - plain text extraction
-   - PDF embedded text extraction
-   - OCR for image files
-   - OCR for scanned PDFs when embedded text is missing
-5. Extracted text and metadata are saved to the local store.
-6. Search queries run entirely against the local index and return ranked results with snippets.
+### High-level flow
+1. User adds one or more folders or files from Files.
+2. The app creates security-scoped bookmarks and saves an `IndexedSource` record.
+3. On launch or reindex, the app resolves bookmarks and starts access sessions.
+4. The indexing coordinator enumerates files under each source.
+5. Supported files are diffed against stored metadata.
+6. New or changed files enter the extraction pipeline.
+7. The extraction pipeline chooses plain text extraction, PDF text extraction, image OCR, or scanned-PDF OCR fallback.
+8. The app stores normalized text, display snippets, and metadata in the local store.
+9. Search queries run locally against the stored index.
+10. Results render with filename, source path, snippet, file type, and OCR provenance.
 
-Core components and responsibilities:
+### Core service responsibilities
+#### `SecurityScopedBookmarkManager`
+- Create bookmark data from user-selected URLs.
+- Resolve bookmark data on launch.
+- Detect stale bookmarks and mark a source as needing re-authorization.
+- Wrap `startAccessingSecurityScopedResource()` / stop-access safely.
 
-### 6.1 Source Access
-`SecurityScopedBookmarkManager`
-- Creates and resolves bookmark data for user-approved URLs.
-- Detects stale bookmarks and requests re-authorization.
-- Wrap access with `startAccessingSecurityScopedResource()` / stop-access calls.
+#### `DocumentPickerCoordinator`
+- Present folder/file picker.
+- Convert selections into source records.
+- Limit the initial flow to standard Files providers.
 
-`DocumentPickerCoordinator`
-- Presents folder/file selection.
-- Converts chosen URLs into saved source records.
-- Restrict initial MVP to iCloud Drive plus other providers that work through standard picker flows.
+#### `FileEnumerationService`
+- Recursively enumerate authorized folders.
+- Filter to supported UTTypes.
+- Collect metadata: file name, relative path, display path, size, modification date, provider info.
 
-### 6.2 Enumeration and Change Detection
-`FileEnumerationService`
-- Recursively enumerates files inside each authorized source.
-- Filters to supported UTTypes.
-- Collects file metadata: name, path display string, byte size, modification date.
+#### `FileMetadataHasher`
+- Optional helper for edge cases where modification date and size are not enough.
+- Use only when needed because hashing large files is expensive.
 
-`FileMetadataHasher`
-- Optional helper that computes a lightweight content hash when metadata alone is not enough.
-- Use hash only when needed because large file hashing can be expensive.
+#### `ContentExtractionService`
+- Single entry point that chooses the right extractor by UTType.
+- Return normalized text plus snippet/display content and extraction diagnostics.
 
-Incremental indexing rule:
-- If source bookmark is unchanged and file modification date/size match the stored record, skip reprocessing.
-- If metadata changed or file is new, enqueue extraction.
-- If a file disappeared, mark it missing and hide from default results.
+#### `PlainTextExtractor`
+- Support `.txt` and `.md` in MVP.
+- Normalize whitespace and line breaks.
 
-### 6.3 Extraction Pipeline
-`ContentExtractionService`
-- Central strategy selector.
-- Accepts file URL plus type info.
-- Returns normalized text, per-page snippet anchors when relevant, OCR provenance, and extraction diagnostics.
+#### `PDFTextExtractor`
+- Use PDFKit to extract embedded text page by page.
+- Mark pages or whole documents for OCR fallback when text is empty or below a minimum threshold.
 
-`PlainTextExtractor`
-- Handles `.txt`, `.md`, maybe simple structured text formats when trivial.
-- Normalize whitespace and trim excessive repeated gaps.
+#### `ImageOCRExtractor`
+- Use Vision for `.png`, `.jpg`, `.jpeg`, `.heic`.
+- Normalize OCR output for search while preserving a readable preview.
 
-`PDFTextExtractor`
-- Uses PDFKit to extract page-by-page text for text-based PDFs.
-- If page text is empty or nearly empty, flag the document/page for OCR fallback.
+#### `PDFOCRExtractor`
+- Rasterize PDF pages that need OCR.
+- Cap total OCR pages in MVP to control runtime.
+- Persist OCR provenance for UI and diagnostics.
 
-`ImageOCRExtractor`
-- Uses Vision text recognition on image formats.
-- Normalize result lines into searchable text.
+#### `IndexingCoordinator`
+- Own full scan, source reindex, and incremental reindex.
+- Use structured concurrency with bounded parallelism.
+- Update persistent job progress and per-file failures.
+- Never let one file failure abort the batch.
 
-`PDFOCRExtractor`
-- Rasterize pages that lack embedded text, then send images through Vision OCR.
-- Add page caps for MVP to control runtime.
+#### `SearchRepository`
+- Execute local token-based queries over indexed metadata and extracted content.
+- Support multi-token AND matching in MVP.
+- Return a ranked `SearchResultItem` projection.
 
-Normalization rules:
-- Lowercase for search indexing.
-- Preserve original snippets for display where possible.
-- Collapse repeated whitespace.
-- Tokenize on non-alphanumeric boundaries for basic search.
+#### `SearchRanker`
+First-pass ranking should be simple and deterministic:
+- Exact filename token match: highest weight.
+- Filename contains query token: high weight.
+- Body contains all tokens: medium weight.
+- More token hits near the snippet seed: small boost.
+- Newer files: optional small boost.
 
-### 6.4 Local Search
-`SearchRepository`
-- Owns query execution over persisted indexed content.
-- Supports simple multi-token AND search for MVP.
-- Returns `SearchResultItem` objects with file metadata, score, snippet, and match source.
+#### `SnippetBuilder`
+- Find the best local match position.
+- Return a short snippet window around that match.
+- Keep snippet generation out of the view layer.
 
-`SearchRanker`
-Suggested first-pass scoring:
-- Exact filename match: very high weight.
-- Filename contains token: high weight.
-- Content contains all tokens: medium weight.
-- More token hits in snippet: small boost.
-- More recent modification date: optional small boost.
-
-`SnippetBuilder`
-- Finds the first or best local occurrence of the matched terms.
-- Produces a short window of text around the hit.
-- Avoid expensive highlighting logic in the storage layer.
-
-### 6.5 Background and Operations
-`IndexingCoordinator`
-- Single entry point for full scan, source-specific reindex, and incremental reindex.
-- Runs work with structured concurrency and a bounded task group.
-- Stores progress so the UI can survive app foreground/background transitions.
-
-`BackgroundIndexScheduler`
-- Registers a background refresh task.
-- Schedules opportunistic refreshes for previously authorized sources.
-- Must degrade gracefully because BackgroundTasks timing is not guaranteed.
+#### `BackgroundIndexScheduler`
+- Register a background refresh task.
+- Schedule reindex opportunities for known sources.
+- Degrade gracefully because iOS does not guarantee timing.
 
 ## 7. Data Model Notes
 Use SwiftData models roughly like this.
@@ -229,7 +224,7 @@ Fields:
 - `id: UUID`
 - `displayName: String`
 - `bookmarkData: Data`
-- `sourceType: String` (`folder`, `file`)
+- `sourceType: String` with values like `folder` or `file`
 - `providerIdentifier: String?`
 - `dateAdded: Date`
 - `lastAuthorizedAt: Date?`
@@ -241,7 +236,6 @@ Fields:
 Fields:
 - `id: UUID`
 - `sourceID`
-- `fileURLBookmarkData: Data?` only if file-level persistence is needed
 - `fileName: String`
 - `relativePath: String`
 - `displayPath: String`
@@ -254,14 +248,18 @@ Fields:
 - `extractionState: String`
 - `usedOCR: Bool`
 - `thumbnailPath: String?`
+- `lastError: String?`
 
 ### `ExtractedContent`
+Prefer chunk- or page-level records rather than a single unbounded blob when content is large.
+
 Fields:
 - `id: UUID`
 - `fileID`
+- `chunkIndex: Int`
+- `pageNumber: Int?`
 - `fullTextNormalized: String`
 - `fullTextPreview: String`
-- `pageNumber: Int?` for page-scoped records if needed
 - `snippetSeedText: String?`
 - `tokenCount: Int`
 - `languageCode: String?`
@@ -278,190 +276,243 @@ Fields:
 - `failureCount: Int`
 - `currentFileName: String?`
 
-Implementation note: if SwiftData becomes awkward for storing a single giant normalized text blob per file, split large content into chunks or pages. Do not over-engineer this before measuring.
+## 8. Search and Indexing Rules
+### Supported file types in MVP
+- `.txt`
+- `.md`
+- `.pdf`
+- `.png`
+- `.jpg`
+- `.jpeg`
+- `.heic`
 
-## 8. UI Plan
-### 8.1 Onboarding
-The first run should explain the access model in plain language:
-- Add folders from Files.
-- The app indexes only what you add.
+### Deferred file types
+Only attempt later if a reliable native extraction path is confirmed:
+- `.rtf`
+- Office documents
+- Pages documents
+
+### Incremental indexing rules
+- If bookmark resolution fails, mark the source inaccessible and stop processing that source.
+- If a file is gone, mark it missing and hide it from default results.
+- If size and modification date are unchanged, skip reprocessing.
+- If metadata changed or file is new, re-extract content.
+- Only compute a content hash when metadata is insufficient.
+
+### Text normalization rules
+- Lowercase for indexed search text.
+- Collapse repeated whitespace.
+- Normalize line endings.
+- Tokenize on non-alphanumeric boundaries for MVP.
+- Preserve a readable preview string for UI display.
+
+## 9. UI Plan
+### Onboarding
+Explain the access model clearly:
+- Add folders or files from Files.
+- Only added locations are searchable.
 - Search stays on device.
 
-Primary CTA: `Add Folder from Files`
-Secondary CTA: `Add Individual Files`
+Primary CTA:
+- `Add Folder from Files`
 
-### 8.2 Search Home
-Default landing screen after onboarding.
+Secondary CTA:
+- `Add Individual Files`
+
+### Search Home
+Default post-onboarding screen.
 Contains:
-- Search field at top.
+- Search field at the top.
 - Indexing status summary.
-- Recent or all indexed result list when query is active.
-- Empty states for no sources, no indexed files, no matches.
+- Query results list.
+- Empty states for no sources, no indexed files, and no matches.
 
-### 8.3 Source Library
-List authorized folders/files.
-Each row shows:
+### Source Library
+List authorized sources with:
 - source name
 - file count
-- last indexed timestamp
-- accessibility warning if bookmark failed
-Actions:
-- reindex
-- re-authorize
-- remove source
+- last indexed time
+- accessibility/error state
 
-### 8.4 Result Row
-Each result should show:
-- file name
-- type badge (`PDF`, `IMG`, `TXT`)
+Row actions:
+- Reindex
+- Re-authorize
+- Remove source
+
+### Result Row
+Show:
+- filename
+- file type badge such as `PDF`, `IMG`, `TXT`
 - breadcrumb/location
 - snippet preview
-- optional indicator when the text came from OCR
+- OCR badge when applicable
 
-### 8.5 Detail View
+### Detail View
 Show:
 - file metadata
-- larger snippet or page references
+- larger snippet or page reference
 - open/preview action
-- source folder reference
-- reindex this file/source action if relevant
+- source reference
+- source/file reindex action if relevant
 
-## 9. Implementation Phases
-### Phase 1: App skeleton and persistence
+### Settings
+Include:
+- manual full reindex
+- clear local index
+- OCR behavior toggle if needed
+- diagnostics summary: last run, failure count, indexed file count
+
+## 10. Implementation Phases
+### Phase 1: App shell and persistence
 Deliverables:
-- SwiftUI app shell
-- SwiftData container
-- model definitions
-- placeholder tabs or navigation destinations
+- Xcode project
+- SwiftUI navigation shell
+- dependency container
+- SwiftData models
+- placeholder screens
 
 ### Phase 2: Source authorization
 Deliverables:
-- document picker integration
-- bookmark persistence and restore
-- source library UI
-- failure and re-authorize states
+- Files picker integration
+- security-scoped bookmark persistence
+- bookmark restore on launch
+- source library UI with repair/remove actions
 
 ### Phase 3: Enumeration and text extraction
 Deliverables:
-- recursive file scanning
+- recursive enumeration
 - supported-type filtering
+- incremental diffing
 - plain text extraction
 - embedded PDF extraction
-- incremental indexing metadata
 
 ### Phase 4: OCR and search
 Deliverables:
 - Vision OCR for images
 - scanned PDF OCR fallback
-- query engine
-- snippet building
-- ranked result list
+- search repository
+- ranking
+- snippet generation
 
 ### Phase 5: Product hardening
 Deliverables:
-- background refresh
-- thumbnails and better previews
-- settings and index management
+- background reindex scheduling
+- previews/thumbnails
+- settings and maintenance tools
 - tests and performance pass
 
-## 10. File-Type Support Guidance
-Start with a narrow, reliable support matrix.
+## 11. Suggested File-by-File Build Order
+The downstream agent should implement in this order and not skip ahead.
 
-Support in MVP:
-- `.txt`
-- `.md`
-- `.pdf`
-- common images: `.png`, `.jpg`, `.jpeg`, `.heic`
+1. `App/LocalFileFinderApp.swift`
+2. `App/AppContainer.swift`
+3. persistence models in `Models/`
+4. `Services/Bookmarks/SecurityScopedBookmarkManager.swift`
+5. `Services/Files/DocumentPickerCoordinator.swift`
+6. `Features/Onboarding/OnboardingView.swift`
+7. `Features/Library/SourceLibraryView.swift`
+8. `Services/Files/FileEnumerationService.swift`
+9. `Services/Indexing/IndexingCoordinator.swift`
+10. `Services/Extraction/PlainTextExtractor.swift`
+11. `Services/Extraction/PDFTextExtractor.swift`
+12. `Services/Extraction/ImageOCRExtractor.swift`
+13. `Services/Extraction/PDFOCRExtractor.swift`
+14. `Services/Search/SearchRepository.swift`
+15. `Services/Search/SearchRanker.swift`
+16. `Services/Search/SnippetBuilder.swift`
+17. `Features/Search/SearchView.swift`
+18. `Features/Detail/DocumentDetailView.swift`
+19. `Services/Indexing/BackgroundIndexScheduler.swift`
+20. tests and fixtures under `Tests/`
 
-Optional later:
-- `.rtf`
-- Office docs via document text extraction if a reliable Apple-native path exists
-
-Important: do not promise full Word/Pages extraction in v1 unless you confirm a robust implementation path. The prompt mentions docs broadly, but the MVP can ship with PDFs, text, and image OCR first as long as product messaging is precise.
-
-## 11. Testing Strategy
-Create fixture files inside `Tests/Fixtures/`:
+## 12. Test Strategy
+Create fixtures in `Tests/Fixtures/`:
 - text-only PDF
 - scanned/image-only PDF
 - screenshot with clear OCR text
 - plain text note
 - unsupported binary file
-- large PDF for performance measurement
+- larger PDF for profiling
 
-Required unit tests:
+### Required unit tests
 - bookmark creation and restoration
-- stale bookmark handling
+- stale bookmark detection
 - enumeration skips unsupported files
-- incremental indexing ignores unchanged files
-- PDF extractor returns page text
-- OCR fallback triggers when PDF page text is empty
-- search ranking prefers filename hits over body hits
+- incremental indexing skips unchanged files
+- PDF extractor returns page text when available
+- OCR fallback triggers when PDF text is missing
+- ranking prefers filename hits over body hits
 - snippet builder returns surrounding text correctly
 
-Required UI tests:
-- onboarding shows source-add flow
-- adding a source transitions to searchable state
-- entering a query shows at least one result with snippet
+### Required UI tests
+- onboarding shows source add flow
+- adding a source leads to a searchable state
+- entering a query shows at least one result row with snippet
 
-Manual device checks:
-- iCloud Drive folder with mixed files
-- third-party provider if available
-- background refresh behavior after app relaunch
-- memory/performance when indexing image-heavy folders
+### Manual validation
+- mixed iCloud Drive folder
+- at least one third-party provider if available
+- relaunch behavior after bookmark restore
+- image-heavy folder indexing performance
+- background refresh behavior after scheduling
 
-## 12. Acceptance Criteria
+## 13. Acceptance Criteria
 The implementation is acceptable when all of the following are true:
-- A user can add folders/files from Files and the app remembers them across launches.
-- The app indexes text-based files and PDFs locally.
+- A user can add folders or files from Files and the app remembers them across launches.
+- The app indexes supported text files, PDFs, and common image formats locally.
 - The app performs on-device OCR for images and scanned PDFs.
-- Search returns relevant matches by keyword with filename, location, and snippet.
-- The app makes clear which files are searchable and why some files may fail.
-- The app can reindex sources without duplicating unchanged work.
+- Search returns useful keyword matches with filename, location, and snippet.
+- The app clearly shows indexing state and explains failures or unsupported files.
+- Reindexing avoids unnecessary repeat work for unchanged files.
 - No file content leaves the device.
-- Basic service and UI tests exist and pass.
+- Service tests and at least one UI flow test pass.
 
-## 13. Risk Mitigations
+## 14. Risks and Mitigations
 ### Sandbox limitations
 Mitigation:
-- Build around user-granted sources.
-- Make scope explicit in onboarding and marketing copy.
-- Store bookmarks robustly and surface repair flows.
+- Build only around user-granted sources.
+- Make the scope explicit in UI copy and marketing.
+- Add repair flows for stale bookmarks.
 
-### OCR cost and latency
+### OCR latency and battery cost
 Mitigation:
-- Process in batches.
-- Cap OCR for extremely large PDFs in MVP.
-- Allow cancellation.
-- Save extracted results so OCR is not repeated unnecessarily.
+- Use bounded concurrency.
+- Cap OCR pages for very large PDFs in MVP.
+- Persist OCR results and avoid redoing unchanged work.
+- Allow cancellation or graceful interruption.
+
+### Search performance on large text blobs
+Mitigation:
+- Store extracted text in chunks/pages.
+- Start with SwiftData.
+- Measure before adding a local FTS sidecar.
 
 ### Provider inconsistency
 Mitigation:
-- Prefer file coordination and defensive error handling.
-- Test first on iCloud Drive.
-- Track provider identifier in source metadata for diagnostics.
+- Test against iCloud Drive first.
+- Track provider identifiers.
+- Use defensive file coordination and visible retry states.
 
-### Native competition risk
+### Native competition
 Mitigation:
-- Differentiate through immediate value: snippets, source management, reindex control, OCR visibility, and local privacy messaging.
+- Differentiate with snippets, explicit OCR handling, source management, and privacy-first local indexing.
 
-## 14. Suggested Execution Order for the Downstream Agent
-Implement in this order and do not skip ahead:
-1. Project skeleton and persistence models.
-2. Document picker plus bookmark persistence.
-3. Source library and restored access on launch.
-4. Enumeration and incremental indexing state.
-5. Plain text and PDF embedded text extraction.
-6. OCR for images and scanned PDFs.
-7. Search repository, ranking, and snippets.
-8. Search/results/detail UI.
-9. Background reindex and settings.
-10. Tests, fixtures, and performance validation.
+## 15. Notes for the Weaker Downstream Agent
+- This is a native iPhone app. Do not scaffold a web frontend or backend.
+- Do not promise unrestricted access to all device files.
+- Keep the indexing pipeline protocol-driven and testable.
+- Keep UI code separate from file logic.
+- Prefer a smaller, reliable support matrix over broad but brittle document support.
+- If SwiftData search becomes a real measured bottleneck, document the problem first, then add a local FTS sidecar.
+- One bad file must never break the whole indexing job.
 
-## 15. Notes for the Weaker Implementation Agent
-- Do not add any backend service.
-- Do not use a web wrapper or cross-platform abstraction.
-- Do not promise unrestricted device-wide file access.
-- Keep the indexing pipeline behind protocols so it is testable.
-- Prefer shipping a smaller but honest support matrix over claiming broad document support that is unreliable.
-- If you hit SwiftData search limitations, document them before replacing persistence. Only escalate after a measured problem appears.
-- Keep file handling resilient: one bad file must not break the overall indexing job.
+## 16. Execution Lane and Handoff Rules
+Use a Codex-first Mac execution lane from the start.
+
+Requirements for each implementation task:
+- preferred agent: `codex`
+- execution target: `mac_ios`
+- required capabilities must include `codex.exec`, `ios.build`, `ios.test`, and `ios.simulator`
+- use git branch handoff so the Mac worker can pull the branch and run the app locally
+
+The downstream agent should complete tasks in order, commit cleanly per phase or task cluster, and verify simulator builds after every meaningful service or UI milestone.
