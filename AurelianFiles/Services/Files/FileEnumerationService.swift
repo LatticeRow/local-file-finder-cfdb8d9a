@@ -13,6 +13,11 @@ struct EnumeratedFile: Identifiable, Hashable {
     let modificationDate: Date?
 }
 
+struct FileEnumerationResult {
+    let files: [EnumeratedFile]
+    let unsupportedCount: Int
+}
+
 final class FileEnumerationService {
     private let logger: AppLogger
 
@@ -25,31 +30,52 @@ final class FileEnumerationService {
         sourceID: UUID,
         sourceName: String,
         sourceType: String
-    ) -> [EnumeratedFile] {
+    ) -> FileEnumerationResult {
         logger.info("Enumerating files for \(sourceName)")
 
         if sourceType == "file" {
             return coordinatedRead(at: sourceURL) { coordinatedURL in
-                enumeratedFile(
+                let outcome = enumeratedFile(
                     at: coordinatedURL,
                     sourceID: sourceID,
                     rootURL: coordinatedURL.deletingLastPathComponent()
-                ).map { [$0] } ?? []
-            } ?? []
+                )
+
+                switch outcome {
+                case .included(let file):
+                    return FileEnumerationResult(files: [file], unsupportedCount: 0)
+                case .unsupported:
+                    return FileEnumerationResult(files: [], unsupportedCount: 1)
+                case .ignored:
+                    return FileEnumerationResult(files: [], unsupportedCount: 0)
+                }
+            } ?? FileEnumerationResult(files: [], unsupportedCount: 0)
         }
 
-        let files = recursivelyEnumerateFiles(
+        let result = recursivelyEnumerateFiles(
             at: sourceURL,
             sourceID: sourceID,
             rootURL: sourceURL
         )
 
-        return files.sorted {
+        let sortedFiles = result.files.sorted {
             $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
         }
+
+        if result.unsupportedCount > 0 {
+            logger.info("Skipped \(result.unsupportedCount) unsupported files while scanning \(sourceName)")
+        }
+
+        return FileEnumerationResult(files: sortedFiles, unsupportedCount: result.unsupportedCount)
     }
 
-    private func enumeratedFile(at fileURL: URL, sourceID: UUID, rootURL: URL) -> EnumeratedFile? {
+    private enum EnumeratedItem {
+        case included(EnumeratedFile)
+        case unsupported
+        case ignored
+    }
+
+    private func enumeratedFile(at fileURL: URL, sourceID: UUID, rootURL: URL) -> EnumeratedItem {
         let values = try? fileURL.resourceValues(forKeys: [
             .isRegularFileKey,
             .contentTypeKey,
@@ -58,15 +84,20 @@ final class FileEnumerationService {
         ])
 
         guard values?.isRegularFile == true else {
-            return nil
+            return .ignored
         }
 
-        let uti = values?.contentType?.identifier
-            ?? UTType(filenameExtension: fileURL.pathExtension)?.identifier
-            ?? "public.data"
+        guard let uti = SupportedSearchContentTypes.supportedIdentifier(
+            for: fileURL,
+            declaredType: values?.contentType
+        ) else {
+            logger.info("Skipping unsupported file \(fileURL.lastPathComponent)")
+            return .unsupported
+        }
+
         let relativePath = relativePathForFile(at: fileURL, rootURL: rootURL)
 
-        return EnumeratedFile(
+        return .included(EnumeratedFile(
             sourceID: sourceID,
             fileURL: fileURL,
             fileName: fileURL.lastPathComponent,
@@ -75,7 +106,7 @@ final class FileEnumerationService {
             uti: uti,
             byteSize: Int64(values?.fileSize ?? 0),
             modificationDate: values?.contentModificationDate
-        )
+        ))
     }
 
     private func relativePathForFile(at fileURL: URL, rootURL: URL) -> String {
@@ -94,7 +125,7 @@ final class FileEnumerationService {
         at directoryURL: URL,
         sourceID: UUID,
         rootURL: URL
-    ) -> [EnumeratedFile] {
+    ) -> FileEnumerationResult {
         coordinatedRead(at: directoryURL) { coordinatedDirectoryURL in
             let childURLs = (try? FileManager.default.contentsOfDirectory(
                 at: coordinatedDirectoryURL,
@@ -111,17 +142,20 @@ final class FileEnumerationService {
             )) ?? []
 
             var files: [EnumeratedFile] = []
+            var unsupportedCount = 0
 
             for childURL in childURLs {
-                files.append(contentsOf: enumerateChild(
+                let childResult = enumerateChild(
                     at: childURL,
                     sourceID: sourceID,
                     rootURL: rootURL
-                ))
+                )
+                files.append(contentsOf: childResult.files)
+                unsupportedCount += childResult.unsupportedCount
             }
 
-            return files
-        } ?? []
+            return FileEnumerationResult(files: files, unsupportedCount: unsupportedCount)
+        } ?? FileEnumerationResult(files: [], unsupportedCount: 0)
     }
 
     private func coordinatedRead<T>(at url: URL, body: (URL) -> T) -> T? {
@@ -164,7 +198,7 @@ final class FileEnumerationService {
         at childURL: URL,
         sourceID: UUID,
         rootURL: URL
-    ) -> [EnumeratedFile] {
+    ) -> FileEnumerationResult {
         let didAccess = childURL.startAccessingSecurityScopedResource()
         defer {
             if didAccess {
@@ -178,15 +212,24 @@ final class FileEnumerationService {
             .isPackageKey,
             .isHiddenKey,
         ]) else {
-            return []
+            return FileEnumerationResult(files: [], unsupportedCount: 0)
         }
 
         if values.isHidden == true {
-            return []
+            return FileEnumerationResult(files: [], unsupportedCount: 0)
         }
 
         if values.isRegularFile == true {
-            return enumeratedFile(at: childURL, sourceID: sourceID, rootURL: rootURL).map { [$0] } ?? []
+            let outcome = enumeratedFile(at: childURL, sourceID: sourceID, rootURL: rootURL)
+
+            switch outcome {
+            case .included(let file):
+                return FileEnumerationResult(files: [file], unsupportedCount: 0)
+            case .unsupported:
+                return FileEnumerationResult(files: [], unsupportedCount: 1)
+            case .ignored:
+                return FileEnumerationResult(files: [], unsupportedCount: 0)
+            }
         }
 
         if values.isDirectory == true, shouldDescendIntoDirectory(at: childURL, values: values) {
@@ -197,6 +240,6 @@ final class FileEnumerationService {
             )
         }
 
-        return []
+        return FileEnumerationResult(files: [], unsupportedCount: 0)
     }
 }

@@ -3,6 +3,89 @@ import Foundation
 import SwiftData
 import UniformTypeIdentifiers
 
+enum SupportedSearchContentTypes {
+    static let markdownType = UTType(filenameExtension: "md")
+        ?? UTType(filenameExtension: "markdown")
+        ?? .plainText
+
+    static let pickerFileContentTypes: [UTType] = {
+        var contentTypes: [UTType] = [
+            .plainText,
+            .pdf,
+            .png,
+            .jpeg,
+            .heic,
+        ]
+
+        if !contentTypes.contains(markdownType) {
+            contentTypes.insert(markdownType, at: 1)
+        }
+
+        return contentTypes
+    }()
+
+    static let supportedFileExtensions: Set<String> = [
+        "txt",
+        "md",
+        "markdown",
+        "pdf",
+        "png",
+        "jpg",
+        "jpeg",
+        "heic",
+    ]
+
+    static func supportedIdentifier(for fileURL: URL, declaredType: UTType?) -> String? {
+        if let declaredType {
+            if declaredType.conforms(to: .pdf) {
+                return UTType.pdf.identifier
+            }
+
+            if declaredType.conforms(to: .png) {
+                return UTType.png.identifier
+            }
+
+            if declaredType.conforms(to: .jpeg) {
+                return UTType.jpeg.identifier
+            }
+
+            if declaredType.conforms(to: .heic) {
+                return UTType.heic.identifier
+            }
+
+            let fileExtension = normalizedFileExtension(for: fileURL)
+            if declaredType.conforms(to: .plainText), fileExtension == "txt" {
+                return UTType.plainText.identifier
+            }
+
+            if ["md", "markdown"].contains(fileExtension) {
+                return markdownType.identifier
+            }
+        }
+
+        switch normalizedFileExtension(for: fileURL) {
+        case "txt":
+            return UTType.plainText.identifier
+        case "md", "markdown":
+            return markdownType.identifier
+        case "pdf":
+            return UTType.pdf.identifier
+        case "png":
+            return UTType.png.identifier
+        case "jpg", "jpeg":
+            return UTType.jpeg.identifier
+        case "heic":
+            return UTType.heic.identifier
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedFileExtension(for fileURL: URL) -> String {
+        fileURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 struct ImportedSource: Hashable {
     let id: UUID
     let url: URL
@@ -26,14 +109,7 @@ final class DocumentPickerCoordinator {
     private let bookmarkManager: SecurityScopedBookmarkManager
     private let logger: AppLogger
 
-    let supportedContentTypes: [UTType] = [
-        .folder,
-        .plainText,
-        .pdf,
-        .png,
-        .jpeg,
-        .heic,
-    ]
+    let supportedContentTypes: [UTType] = [.folder] + SupportedSearchContentTypes.pickerFileContentTypes
 
     init(bookmarkManager: SecurityScopedBookmarkManager, logger: AppLogger) {
         self.bookmarkManager = bookmarkManager
@@ -41,7 +117,7 @@ final class DocumentPickerCoordinator {
     }
 
     var supportedFileContentTypes: [UTType] {
-        supportedContentTypes.filter { $0 != .folder }
+        SupportedSearchContentTypes.pickerFileContentTypes
     }
 
     func importSelections(

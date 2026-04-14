@@ -266,15 +266,16 @@ struct SourceLibraryView: View {
         let filesForSource = indexedFiles.filter { file in
             file.source?.id == source.id || file.sourceID == source.id
         }
-        let fileIDs = Set(filesForSource.map(\.id))
+        let visibleFiles = filesForSource.filter { !$0.isMissing }
+        let fileIDs = Set(visibleFiles.map(\.id))
         let extractedForSource = extractedContent.filter { content in
             fileIDs.contains(content.file?.id ?? content.fileID)
         }
         let searchableFileIDs = Set(extractedForSource.map { $0.file?.id ?? $0.fileID })
-        let ocrCount = filesForSource.filter(\.usedOCR).count
+        let ocrCount = visibleFiles.filter(\.usedOCR).count
 
         return SourceDiagnostics(
-            discoveredCount: filesForSource.count,
+            discoveredCount: visibleFiles.count,
             searchableCount: searchableFileIDs.count,
             ocrCount: ocrCount
         )
