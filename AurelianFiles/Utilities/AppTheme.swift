@@ -1,6 +1,8 @@
 import SwiftUI
 
 enum AppTheme {
+    static let tabBarContentInset: CGFloat = 96
+
     static let background = LinearGradient(
         colors: [Color(red: 0.05, green: 0.05, blue: 0.08), Color(red: 0.10, green: 0.08, blue: 0.12)],
         startPoint: .topLeading,

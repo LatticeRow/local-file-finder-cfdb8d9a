@@ -34,6 +34,7 @@ struct RootView: View {
             .tag(RootTab.settings)
         }
         .toolbarBackground(AppTheme.canvas, for: .tabBar)
+        .toolbarBackground(.visible, for: .tabBar)
         .toolbarColorScheme(.dark, for: .tabBar)
         .background(AppTheme.background.ignoresSafeArea())
     }

@@ -14,14 +14,18 @@ final class SecurityScopedBookmarkManager {
 
     func createBookmark(for url: URL) throws -> Data {
         logger.info("Creating bookmark for \(url.lastPathComponent)")
-        return try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        return try url.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
     }
 
     func resolveBookmark(_ data: Data) throws -> ResolvedBookmark {
         var isStale = false
         let url = try URL(
             resolvingBookmarkData: data,
-            options: .withoutUI,
+            options: [.withoutUI],
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         )

@@ -1,11 +1,11 @@
 import Foundation
 import Observation
 
+@MainActor
 @Observable
 final class SearchViewModel {
     var query = ""
     var results: [SearchResultItem] = []
-    var statusSummary = "The dependency container is wired."
 
     private let searchRepository: SearchRepository
 
@@ -14,6 +14,6 @@ final class SearchViewModel {
     }
 
     func performSearch() {
-        results = searchRepository.placeholderResults(matching: query)
+        results = searchRepository.search(matching: query)
     }
 }

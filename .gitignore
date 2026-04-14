@@ -23,3 +23,9 @@ Package.resolved
 
 # Logs
 *.log
+
+# Local agent metadata
+.agentsight-codex-last.txt
+
+# Workspace metadata
+AurelianFiles.xcodeproj/project.xcworkspace/xcshareddata/

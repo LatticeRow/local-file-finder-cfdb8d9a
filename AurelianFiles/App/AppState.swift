@@ -10,5 +10,7 @@ enum RootTab: Hashable {
 @Observable
 final class AppState {
     var selectedTab: RootTab = .search
-    var indexingSummary = "App shell ready"
+    var indexingSummary = "No indexing activity yet."
+    var isIndexing = false
+    var indexingDetail: String?
 }

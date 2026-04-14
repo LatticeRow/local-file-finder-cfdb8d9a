@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 struct SearchScene: View {
     @State private var viewModel: SearchViewModel
@@ -13,8 +14,10 @@ struct SearchScene: View {
 }
 
 struct SearchView: View {
-    @Bindable var viewModel: SearchViewModel
     @Environment(AppContainer.self) private var container
+    @Bindable var viewModel: SearchViewModel
+    @Query(sort: \IndexedSource.dateAdded, order: .reverse) private var sources: [IndexedSource]
+    @Query(sort: \IndexedFile.fileName, order: .forward) private var indexedFiles: [IndexedFile]
 
     var body: some View {
         ZStack {
@@ -22,20 +25,17 @@ struct SearchView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Aurelian Files")
-                            .font(.largeTitle.weight(.bold))
-                            .foregroundStyle(AppTheme.primaryText)
-
-                        Text("Private document search with an injectable SwiftData core and native iPhone shell.")
-                            .foregroundStyle(AppTheme.secondaryText)
+                    if sources.isEmpty {
+                        introCard
                     }
 
-                    OnboardingView()
+                    searchField
 
                     statusCard
 
-                    searchField
+                    if sources.isEmpty {
+                        OnboardingView()
+                    }
 
                     if viewModel.results.isEmpty {
                         emptyState
@@ -54,22 +54,38 @@ struct SearchView: View {
                 }
                 .padding(20)
             }
+            .safeAreaPadding(.bottom, AppTheme.tabBarContentInset)
         }
         .navigationTitle("Search")
         .navigationBarTitleDisplayMode(.large)
-        .onAppear {
-            viewModel.statusSummary = container.indexingCoordinator.statusSummary()
+    }
+
+    private var introCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Aurelian Files")
+                .font(.largeTitle.weight(.bold))
+                .foregroundStyle(AppTheme.primaryText)
+
+            Text("Add folders or files from Files, then search them here.")
+                .foregroundStyle(AppTheme.secondaryText)
         }
     }
 
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Indexing shell", systemImage: "bolt.horizontal.circle")
+            Label("Local index", systemImage: "bolt.horizontal.circle")
                 .font(.headline)
                 .foregroundStyle(AppTheme.primaryText)
 
-            Text(viewModel.statusSummary)
+            Text(statusSummary)
                 .foregroundStyle(AppTheme.secondaryText)
+
+            if let indexingDetail, container.appState.isIndexing {
+                Text(indexingDetail)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.secondaryText)
+                    .lineLimit(1)
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -94,8 +110,11 @@ struct SearchView: View {
                 .onSubmit {
                     viewModel.performSearch()
                 }
+                .onChange(of: viewModel.query) { _, _ in
+                    viewModel.performSearch()
+                }
 
-            Button("Run Placeholder Search") {
+            Button("Search") {
                 viewModel.performSearch()
             }
             .buttonStyle(.borderedProminent)
@@ -104,11 +123,11 @@ struct SearchView: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Search target ready")
+            Text(emptyStateTitle)
                 .font(.headline)
                 .foregroundStyle(AppTheme.primaryText)
 
-            Text("Add Files-backed sources in a downstream phase. The shared container, SwiftData store, and tab shell are already in place.")
+            Text(emptyStateMessage)
                 .foregroundStyle(AppTheme.secondaryText)
         }
         .padding(20)
@@ -119,6 +138,50 @@ struct SearchView: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(AppTheme.cardBorder, lineWidth: 1)
         )
+    }
+
+    private var statusSummary: String {
+        if container.appState.isIndexing {
+            return container.appState.indexingSummary
+        }
+
+        if let indexingSummary = container.appState.indexingSummary.nilIfPlaceholder {
+            return indexingSummary
+        }
+
+        switch sources.count {
+        case 0:
+            return "No folders or files added yet."
+        default:
+            return indexedSummary
+        }
+    }
+
+    private var emptyStateTitle: String {
+        sources.isEmpty ? "Add a source to get started" : "No matches yet"
+    }
+
+    private var emptyStateMessage: String {
+        if sources.isEmpty {
+            return "Add folders or files from Files to start searching."
+        }
+
+        return "Try a filename or a word from a document."
+    }
+
+    private var indexedSummary: String {
+        switch (sources.count, indexedFiles.count) {
+        case (1, 1):
+            return "1 source with 1 searchable file."
+        case (1, _):
+            return "1 source with \(indexedFiles.count) searchable files."
+        default:
+            return "\(sources.count) sources with \(indexedFiles.count) searchable files."
+        }
+    }
+
+    private var indexingDetail: String? {
+        container.appState.indexingDetail
     }
 }
 
@@ -169,10 +232,24 @@ private struct SearchResultCard: View {
     }
 }
 
-#Preview {
-    NavigationStack {
-        SearchScene(searchRepository: SearchRepository(logger: AppLogger(subsystem: "preview", category: "search")))
-            .environment(AppContainer.preview())
+private extension String {
+    var nilIfPlaceholder: String? {
+        switch self {
+        case "No indexing activity yet.", "Indexing is already running.":
+            return nil
+        default:
+            return self
+        }
     }
+}
+
+#Preview {
+    let container = AppContainer.preview()
+
+    NavigationStack {
+        SearchScene(searchRepository: container.searchRepository)
+            .environment(container)
+    }
+    .modelContainer(container.modelContainer)
     .preferredColorScheme(.dark)
 }
