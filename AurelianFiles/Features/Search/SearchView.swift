@@ -66,7 +66,7 @@ struct SearchView: View {
                 .font(.largeTitle.weight(.bold))
                 .foregroundStyle(AppTheme.primaryText)
 
-            Text("Add folders or files from Files, then search them here.")
+            Text("Search the folders and files you add from Files.")
                 .foregroundStyle(AppTheme.secondaryText)
         }
     }
@@ -107,6 +107,7 @@ struct SearchView: View {
                 .background(AppTheme.canvas)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .foregroundStyle(AppTheme.primaryText)
+                .accessibilityIdentifier("search.query")
                 .onSubmit {
                     viewModel.performSearch()
                 }
@@ -118,6 +119,7 @@ struct SearchView: View {
                 viewModel.performSearch()
             }
             .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("search.submit")
         }
     }
 
@@ -164,6 +166,10 @@ struct SearchView: View {
     private var emptyStateMessage: String {
         if sources.isEmpty {
             return "Add folders or files from Files to start searching."
+        }
+
+        if sources.contains(where: { $0.requiresReauthorization || !$0.isAccessible }) {
+            return "Restore source access in Library to keep searching."
         }
 
         return "Try a filename or a word from a document."

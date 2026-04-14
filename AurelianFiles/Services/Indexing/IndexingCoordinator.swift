@@ -124,6 +124,26 @@ final class IndexingCoordinator {
         }
     }
 
+    func runReindexSources(withIDs ids: [UUID]) {
+        guard indexingTask == nil else {
+            appState.indexingSummary = "Indexing is already running."
+            return
+        }
+
+        indexingTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.indexingTask = nil }
+
+            do {
+                try await self.reindexSources(withIDs: ids)
+            } catch {
+                self.appState.isIndexing = false
+                self.appState.indexingSummary = "Indexing failed."
+                self.appState.indexingDetail = error.localizedDescription
+            }
+        }
+    }
+
     private func reindex(
         sources: [IndexedSource],
         context: ModelContext,
@@ -143,36 +163,30 @@ final class IndexingCoordinator {
         appState.indexingDetail = nil
 
         for source in sources {
-            try removeIndexedData(for: source, context: context)
             job.currentSourceName = source.displayName
 
             do {
                 let accessURL: URL
-                let didAccess: Bool
+                let session: SecurityScopedAccessSession
 
                 if let preferredURL = preferredURLsBySourceID[source.id] {
                     accessURL = preferredURL
-                    didAccess = accessURL.startAccessingSecurityScopedResource()
+                    session = try bookmarkManager.startAccessing(accessURL)
                 } else {
                     let resolvedBookmark = try bookmarkManager.resolveBookmark(source.bookmarkData)
-                    if resolvedBookmark.isStale {
-                        source.bookmarkData = try bookmarkManager.createBookmark(for: resolvedBookmark.url)
+                    if let refreshedBookmarkData = try bookmarkManager.refreshBookmarkDataIfNeeded(for: resolvedBookmark) {
+                        source.bookmarkData = refreshedBookmarkData
                         source.lastBookmarkRefreshAt = .now
                     }
                     accessURL = resolvedBookmark.url
-                    didAccess = accessURL.startAccessingSecurityScopedResource()
-                }
-
-                guard didAccess else {
-                    throw IndexingError.unableToAccessSource(source.displayName)
+                    session = try bookmarkManager.startAccessing(accessURL)
                 }
 
                 defer {
-                    if didAccess {
-                        accessURL.stopAccessingSecurityScopedResource()
-                    }
+                    session.stopAccessing()
                 }
 
+                try removeIndexedData(for: source, context: context)
                 let files = fileEnumerationService.enumerateVisibleFiles(
                     at: accessURL,
                     sourceID: source.id,
@@ -308,17 +322,6 @@ final class IndexingCoordinator {
             return "Indexing finished with 1 searchable file."
         default:
             return "Indexing finished with \(job.successCount) searchable files."
-        }
-    }
-}
-
-private enum IndexingError: LocalizedError {
-    case unableToAccessSource(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .unableToAccessSource(let sourceName):
-            return "The app could not access \(sourceName) for indexing."
         }
     }
 }

@@ -2,10 +2,15 @@ import SwiftUI
 import SwiftData
 
 struct SourceLibraryView: View {
+    @Environment(AppContainer.self) private var container
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \IndexedSource.dateAdded, order: .reverse) private var sources: [IndexedSource]
     @Query private var indexedFiles: [IndexedFile]
     @Query private var extractedContent: [ExtractedContent]
+
+    @State private var activePickerRequest: SourcePickerRequest?
+    @State private var importErrorMessage: String?
+    @State private var sourcePendingRemoval: IndexedSource?
 
     var body: some View {
         ZStack {
@@ -17,8 +22,10 @@ struct SourceLibraryView: View {
                         .font(.largeTitle.weight(.bold))
                         .foregroundStyle(AppTheme.primaryText)
 
-                    Text("Manage the folders and files Aurelian Files can search.")
+                    Text("Add the folders and files you want to search.")
                         .foregroundStyle(AppTheme.secondaryText)
+
+                    addActionsCard
 
                     if sources.isEmpty {
                         emptyStateCard
@@ -34,15 +41,87 @@ struct SourceLibraryView: View {
         }
         .navigationTitle("Library")
         .navigationBarTitleDisplayMode(.large)
+        .sheet(item: $activePickerRequest) { request in
+            SecurityScopedDocumentPicker(
+                allowedContentTypes: request.mode.allowedContentTypes(
+                    fileContentTypes: container.documentPickerCoordinator.supportedFileContentTypes
+                ),
+                allowsMultipleSelection: request.allowsMultipleSelection
+            ) { result in
+                handlePickerResult(result, request: request)
+            }
+        }
+        .alert(
+            "Couldn’t Update Source",
+            isPresented: Binding(
+                get: { importErrorMessage != nil },
+                set: { if !$0 { importErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(importErrorMessage ?? "Try again.")
+        }
+        .alert(
+            "Remove Source?",
+            isPresented: Binding(
+                get: { sourcePendingRemoval != nil },
+                set: { if !$0 { sourcePendingRemoval = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                sourcePendingRemoval = nil
+            }
+            Button("Remove", role: .destructive) {
+                guard let sourcePendingRemoval else {
+                    return
+                }
+
+                removeSource(sourcePendingRemoval)
+                self.sourcePendingRemoval = nil
+            }
+        } message: {
+            Text("This removes the saved source and its local search data.")
+        }
+    }
+
+    private var addActionsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add from Files")
+                .font(.headline)
+                .foregroundStyle(AppTheme.primaryText)
+
+            HStack(spacing: 12) {
+                Button("Add Folder") {
+                    activePickerRequest = .add(.folder)
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("library.add-folder")
+
+                Button("Add File") {
+                    activePickerRequest = .add(.file)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("library.add-file")
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(AppTheme.cardBorder, lineWidth: 1)
+        )
     }
 
     private var emptyStateCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("No authorized sources yet")
+            Text("No sources yet")
                 .font(.headline)
                 .foregroundStyle(AppTheme.primaryText)
 
-            Text("Use the Search tab to add folders or individual files from Files. Added items are stored locally and appear here.")
+            Text("Add a folder or file from Files to start searching.")
                 .foregroundStyle(AppTheme.secondaryText)
         }
         .padding(20)
@@ -56,7 +135,9 @@ struct SourceLibraryView: View {
     }
 
     private func sourceCard(for source: IndexedSource) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let diagnostics = diagnostics(for: source)
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(source.displayName)
@@ -69,27 +150,25 @@ struct SourceLibraryView: View {
 
                 Spacer(minLength: 12)
 
-                Text(source.sourceType.capitalized)
+                Text(accessBadgeText(for: source))
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.accent)
+                    .foregroundStyle(source.requiresReauthorization ? AppTheme.primaryText : AppTheme.accent)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(AppTheme.accent.opacity(0.12))
+                    .background(accessBadgeBackground(for: source))
                     .clipShape(Capsule())
             }
 
-            if let lastAuthorizedAt = source.lastAuthorizedAt {
-                Text("Authorized \(lastAuthorizedAt.formatted(date: .abbreviated, time: .shortened))")
+            if let supportingText = sourceSupportingText(for: source) {
+                Text(supportingText)
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.secondaryText)
             }
 
-            let diagnostics = diagnostics(for: source)
-
             VStack(alignment: .leading, spacing: 4) {
-                Text("Files discovered: \(diagnostics.discoveredCount)")
-                Text("Files with searchable text: \(diagnostics.searchableCount)")
-                Text("Files using OCR: \(diagnostics.ocrCount)")
+                Text("Files found: \(diagnostics.discoveredCount)")
+                Text("Searchable: \(diagnostics.searchableCount)")
+                Text("OCR: \(diagnostics.ocrCount)")
             }
             .font(.caption)
             .foregroundStyle(AppTheme.secondaryText)
@@ -97,19 +176,32 @@ struct SourceLibraryView: View {
             if let issueMessage = issueMessage(for: source) {
                 Text(issueMessage)
                     .font(.caption)
-                    .foregroundStyle(.red.opacity(0.9))
+                    .foregroundStyle(Color.red.opacity(0.88))
             }
 
-            if let diagnosticsNote = diagnostics.note {
-                Text(diagnosticsNote)
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.secondaryText)
-            }
+            HStack(spacing: 12) {
+                if source.requiresReauthorization || !source.isAccessible {
+                    Button("Restore Access") {
+                        activePickerRequest = .repair(source.id, mode(for: source))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("library.restore-access.\(source.id.uuidString)")
+                } else {
+                    Button("Reindex") {
+                        container.indexingCoordinator.runReindexSources(withIDs: [source.id])
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(container.appState.isIndexing)
+                    .accessibilityIdentifier("library.reindex.\(source.id.uuidString)")
+                }
 
-            Button("Remove", role: .destructive) {
-                removeSource(source)
+                Button("Remove", role: .destructive) {
+                    sourcePendingRemoval = source
+                }
+                .buttonStyle(.bordered)
+                .disabled(container.appState.isIndexing)
+                .accessibilityIdentifier("library.remove.\(source.id.uuidString)")
             }
-            .buttonStyle(.bordered)
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -122,23 +214,49 @@ struct SourceLibraryView: View {
     }
 
     private func sourceDetail(for source: IndexedSource) -> String {
-        switch source.sourceType {
-        case "folder":
-            return "Folder from Files"
-        case "file":
-            return "File from Files"
-        default:
-            return "Added from Files"
+        switch source.resolvedSourceType {
+        case .folder:
+            return "Folder"
+        case .file:
+            return "File"
         }
     }
 
+    private func accessBadgeText(for source: IndexedSource) -> String {
+        if source.requiresReauthorization || !source.isAccessible {
+            return "Needs Access"
+        }
+
+        return "Ready"
+    }
+
+    private func accessBadgeBackground(for source: IndexedSource) -> Color {
+        if source.requiresReauthorization || !source.isAccessible {
+            return Color.red.opacity(0.18)
+        }
+
+        return AppTheme.accent.opacity(0.12)
+    }
+
+    private func sourceSupportingText(for source: IndexedSource) -> String? {
+        if source.requiresReauthorization || !source.isAccessible {
+            return "Choose this source again to keep searching it."
+        }
+
+        if let lastIndexedAt = source.lastIndexedAt {
+            return "Last indexed \(lastIndexedAt.formatted(date: .abbreviated, time: .shortened))"
+        }
+
+        return "Ready to index"
+    }
+
     private func issueMessage(for source: IndexedSource) -> String? {
-        if source.requiresReauthorization {
-            return "Access needs to be restored for this source."
+        if source.requiresReauthorization || !source.isAccessible {
+            return "Access isn’t available right now."
         }
 
         if let lastError = source.lastError, !lastError.isEmpty {
-            return "This source couldn't be indexed."
+            return "This source couldn’t be updated."
         }
 
         return nil
@@ -155,27 +273,57 @@ struct SourceLibraryView: View {
         let searchableFileIDs = Set(extractedForSource.map { $0.file?.id ?? $0.fileID })
         let ocrCount = filesForSource.filter(\.usedOCR).count
 
-        let note: String?
-        if issueMessage(for: source) != nil {
-            note = nil
-        } else if source.lastIndexedAt == nil {
-            note = "Ready to index."
-        } else if filesForSource.isEmpty {
-            note = "No files were found."
-        } else if searchableFileIDs.isEmpty {
-            note = "Files were found, but no text is searchable yet."
-        } else if ocrCount > 0 {
-            note = "\(searchableFileIDs.count) files are searchable. \(ocrCount) use OCR."
-        } else {
-            note = "\(searchableFileIDs.count) files are searchable."
-        }
-
         return SourceDiagnostics(
             discoveredCount: filesForSource.count,
             searchableCount: searchableFileIDs.count,
-            ocrCount: ocrCount,
-            note: note
+            ocrCount: ocrCount
         )
+    }
+
+    private func handlePickerResult(_ result: Result<[URL], Error>, request: SourcePickerRequest) {
+        activePickerRequest = nil
+
+        do {
+            let urls = try result.get()
+            guard !urls.isEmpty else {
+                return
+            }
+
+            switch request {
+            case .add(let mode):
+                let importedSources = try container.documentPickerCoordinator.importSelections(
+                    urls,
+                    as: mode.sourceType,
+                    into: modelContext
+                )
+                if !importedSources.isEmpty {
+                    container.indexingCoordinator.runReindexImportedSources(importedSources)
+                }
+            case .repair(let sourceID, _):
+                guard let source = sources.first(where: { $0.id == sourceID }),
+                      let url = urls.first else {
+                    throw SourceImportError.invalidSelection
+                }
+
+                let importedSource = try container.documentPickerCoordinator.reauthorizeSource(
+                    source,
+                    with: url,
+                    into: modelContext
+                )
+                container.indexingCoordinator.runReindexImportedSources([importedSource])
+            }
+        } catch {
+            importErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func mode(for source: IndexedSource) -> SourcePickerMode {
+        switch source.resolvedSourceType {
+        case .folder:
+            return .folder
+        case .file:
+            return .file
+        }
     }
 
     private func removeSource(_ source: IndexedSource) {
@@ -197,8 +345,9 @@ struct SourceLibraryView: View {
         modelContext.delete(source)
         do {
             try modelContext.save()
+            container.appState.indexingSummary = container.indexingCoordinator.statusSummary()
         } catch {
-            assertionFailure("Failed to remove source: \(error.localizedDescription)")
+            importErrorMessage = "Try again."
         }
     }
 
@@ -215,7 +364,36 @@ private struct SourceDiagnostics {
     let discoveredCount: Int
     let searchableCount: Int
     let ocrCount: Int
-    let note: String?
+}
+
+private enum SourcePickerRequest: Identifiable {
+    case add(SourcePickerMode)
+    case repair(UUID, SourcePickerMode)
+
+    var id: String {
+        switch self {
+        case .add(let mode):
+            return "add-\(mode.rawValue)"
+        case .repair(let sourceID, let mode):
+            return "repair-\(sourceID.uuidString)-\(mode.rawValue)"
+        }
+    }
+
+    var mode: SourcePickerMode {
+        switch self {
+        case .add(let mode), .repair(_, let mode):
+            return mode
+        }
+    }
+
+    var allowsMultipleSelection: Bool {
+        switch self {
+        case .add:
+            return true
+        case .repair:
+            return false
+        }
+    }
 }
 
 #Preview {
@@ -223,5 +401,6 @@ private struct SourceDiagnostics {
         SourceLibraryView()
     }
     .modelContainer(AppContainer.makeModelContainer(inMemoryOnly: true))
+    .environment(AppContainer.preview())
     .preferredColorScheme(.dark)
 }

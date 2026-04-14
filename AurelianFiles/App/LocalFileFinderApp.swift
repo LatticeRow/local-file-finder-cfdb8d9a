@@ -10,6 +10,9 @@ struct AurelianFilesApp: App {
                 .preferredColorScheme(.dark)
                 .environment(container)
                 .modelContainer(container.modelContainer)
+                .task {
+                    container.restorePersistedSourceAccessIfNeeded()
+                }
         }
     }
 }

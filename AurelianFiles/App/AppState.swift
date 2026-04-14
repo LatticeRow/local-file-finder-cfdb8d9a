@@ -13,4 +13,5 @@ final class AppState {
     var indexingSummary = "No indexing activity yet."
     var isIndexing = false
     var indexingDetail: String?
+    var hasRestoredSourceAccess = false
 }

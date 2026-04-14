@@ -1,6 +1,7 @@
 # Xcode
 DerivedData/
 build/
+AurelianFiles.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 *.pbxuser
 !default.pbxuser
 *.mode1v3
@@ -16,6 +17,7 @@ xcuserdata/
 
 # SwiftPM
 .build/
+.swiftpm/
 Package.resolved
 
 # macOS
@@ -23,9 +25,7 @@ Package.resolved
 
 # Logs
 *.log
+*.xcresult
 
 # Local agent metadata
 .agentsight-codex-last.txt
-
-# Workspace metadata
-AurelianFiles.xcodeproj/project.xcworkspace/xcshareddata/

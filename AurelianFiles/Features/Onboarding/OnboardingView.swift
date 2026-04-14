@@ -1,45 +1,47 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
-import CryptoKit
 import UIKit
 
 struct OnboardingView: View {
     @Environment(AppContainer.self) private var container
     @Environment(\.modelContext) private var modelContext
 
-    @State private var activePickerMode: PickerMode?
+    @State private var activePickerMode: SourcePickerMode?
     @State private var importErrorMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Search only the folders and files you add from Files.")
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Search what you add from Files.")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(AppTheme.primaryText)
 
-            Text("Aurelian Files keeps search on this iPhone. Added folders include their subfolders.")
+            Text("Add folders or files, then search them here.")
                 .foregroundStyle(AppTheme.secondaryText)
 
             VStack(alignment: .leading, spacing: 12) {
-                Label("Add folders or individual files from Files", systemImage: "folder.badge.plus")
-                Label("Keep your search data on this iPhone", systemImage: "lock.shield")
-                Label("Search file names and document text", systemImage: "doc.text.magnifyingglass")
+                Label("Add folders or files", systemImage: "folder.badge.plus")
+                Label("Search stays on this iPhone", systemImage: "lock.shield")
             }
             .foregroundStyle(AppTheme.primaryText)
 
             HStack(spacing: 12) {
-                Button("Add Folder from Files") {
+                Button("Add Folder") {
                     activePickerMode = .folder
                 }
-                    .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .accessibilityIdentifier("onboarding.add-folder")
 
-                Button("Add Individual Files") {
+                Button("Add Files") {
                     activePickerMode = .file
                 }
-                    .buttonStyle(.bordered)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("onboarding.add-files")
             }
         }
-        .padding(24)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
@@ -69,82 +71,47 @@ struct OnboardingView: View {
     }
 
     private var fileContentTypes: [UTType] {
-        container.documentPickerCoordinator.supportedContentTypes.filter { $0 != .folder }
+        container.documentPickerCoordinator.supportedFileContentTypes
     }
 
-    private func handleImport(_ result: Result<[URL], Error>, sourceType: String) {
+    private func handleImport(_ result: Result<[URL], Error>, sourceType: IndexedSource.SourceType) {
         activePickerMode = nil
 
         do {
             let urls = try result.get()
-            let importedSources = try persistImportedSources(urls, sourceType: sourceType)
+            guard !urls.isEmpty else {
+                return
+            }
+
+            let importedSources = try container.documentPickerCoordinator.importSelections(
+                urls,
+                as: sourceType,
+                into: modelContext
+            )
             if !importedSources.isEmpty {
                 container.indexingCoordinator.runReindexImportedSources(importedSources)
                 container.appState.selectedTab = .search
             }
         } catch {
-            importErrorMessage = "Try choosing the folder or file again."
+            importErrorMessage = error.localizedDescription
         }
-    }
-
-    private func persistImportedSources(_ urls: [URL], sourceType: String) throws -> [ImportedSource] {
-        let existingSources = try modelContext.fetch(FetchDescriptor<IndexedSource>())
-        let existingIdentifiers = Set(existingSources.compactMap(\.providerIdentifier))
-
-        var importedSources: [ImportedSource] = []
-
-        for url in urls {
-            let providerIdentifier = sourceIdentifier(for: url, sourceType: sourceType)
-            guard !existingIdentifiers.contains(providerIdentifier) else {
-                continue
-            }
-
-            let didAccess = url.startAccessingSecurityScopedResource()
-            defer {
-                if didAccess {
-                    url.stopAccessingSecurityScopedResource()
-                }
-            }
-
-            let bookmarkData = try container.bookmarkManager.createBookmark(for: url)
-            let source = IndexedSource(
-                displayName: url.lastPathComponent,
-                bookmarkData: bookmarkData,
-                sourceType: sourceType,
-                providerIdentifier: providerIdentifier,
-                lastAuthorizedAt: .now,
-                isAccessible: true
-            )
-            modelContext.insert(source)
-            importedSources.append(ImportedSource(id: source.id, url: url))
-        }
-
-        if !importedSources.isEmpty {
-            try modelContext.save()
-        }
-
-        return importedSources
-    }
-
-    private func sourceIdentifier(for url: URL, sourceType: String) -> String {
-        let input = "\(sourceType)|\(url.absoluteString)"
-        let digest = SHA256.hash(data: Data(input.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
 
-struct ImportedSource: Hashable {
-    let id: UUID
-    let url: URL
-}
-
-private enum PickerMode: String, Identifiable {
+enum SourcePickerMode: String, Identifiable {
     case folder
     case file
 
     var id: String { rawValue }
 
-    var sourceType: String { rawValue }
+    var sourceType: IndexedSource.SourceType {
+        switch self {
+        case .folder:
+            return .folder
+        case .file:
+            return .file
+        }
+    }
 
     func allowedContentTypes(fileContentTypes: [UTType]) -> [UTType] {
         switch self {
@@ -156,7 +123,7 @@ private enum PickerMode: String, Identifiable {
     }
 }
 
-private struct SecurityScopedDocumentPicker: UIViewControllerRepresentable {
+struct SecurityScopedDocumentPicker: UIViewControllerRepresentable {
     let allowedContentTypes: [UTType]
     let allowsMultipleSelection: Bool
     let onComplete: (Result<[URL], Error>) -> Void
